@@ -123,6 +123,7 @@ def make_predictions(audio_features, model):
     audio_features_df = pd.DataFrame(audio_features, index=[0])
     
     combined_df = pd.concat([df, audio_features_df], axis=0)
+    combined_df = scaler.transform(combined_df)
     ori_umap = dim_reduction_model.fit_transform(combined_df)
 
     # Transform the audio features
