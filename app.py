@@ -1,19 +1,22 @@
+import umap
 import streamlit as st
+import pandas as pd
 import numpy as np
 import librosa
-import plotly.graph_objects as go
-from annotated_text import annotated_text
-from mutagen.easyid3 import EasyID3
-from mutagen.mp3 import MP3
-import joblib
-import pandas as pd
-import umap
-from sklearn.preprocessing import StandardScaler
-import plotly.express as px
-import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
 import random
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+from sklearn.manifold import TSNE, trustworthiness
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+from sklearn.cluster import KMeans, AgglomerativeClustering, MeanShift, Birch, DBSCAN
+from sklearn.mixture import GaussianMixture
+from sklearn.decomposition import PCA
+from annotated_text import annotated_text
+from mutagen.mp3 import MP3
+from mutagen.easyid3 import EasyID3
+import plotly.graph_objects as go
+import plotly.express as px
 
 @st.cache_data
 def load_and_extract_audio_features(mp3_file):
@@ -86,7 +89,7 @@ def load_and_extract_audio_features(mp3_file):
 
         return y, sr, features
     except Exception as e:
-        print(f"Error processing audio: {e}")
+        st.write(f"Error processing audio: {e}")
         return None, None, None
 
 def make_predictions(audio_features, model):
@@ -136,6 +139,34 @@ def make_predictions(audio_features, model):
     ori_model_labels = ori_model_labels[:-1]
 
     return prediction, ori_model_labels, ori_umap, audio_features_df_umap
+
+
+@st.cache_data
+def plot_spectral_centroid(y, sr):
+    spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
+    frames = range(len(spectral_centroid))
+    t = librosa.frames_to_time(frames, sr=sr)
+    fig_centroid = go.Figure()
+    fig_centroid.add_trace(go.Scatter(x=t, y=spectral_centroid, mode='lines', name='Spectral Centroid', line=dict(color='green')))
+    fig_centroid.update_layout(title='Spectral Centroid', xaxis_title='Time (s)', yaxis_title='Hz', height=400)
+    st.plotly_chart(fig_centroid, use_container_width=True)
+
+@st.cache_data
+def plot_spectral_rolloff(y, sr):
+    spectral_rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)[0]
+    frames = range(len(spectral_rolloff))
+    t = librosa.frames_to_time(frames, sr=sr)
+    fig_rolloff = go.Figure()
+    fig_rolloff.add_trace(go.Scatter(x=t, y=spectral_rolloff, mode='lines', name='Spectral Rolloff', line=dict(color='purple')))
+    fig_rolloff.update_layout(title='Spectral Rolloff', xaxis_title='Time (s)', yaxis_title='Hz', height=400)
+    st.plotly_chart(fig_rolloff, use_container_width=True)
+
+@st.cache_data
+def plot_stft(y, sr):
+    D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
+    fig_stft = go.Figure(data=go.Heatmap(z=D, x=librosa.frames_to_time(np.arange(D.shape[1])), y=librosa.fft_frequencies(sr=sr), colorscale='Rainbow'))
+    fig_stft.update_layout(title='Short-Time Fourier Transform (STFT)', xaxis_title='Time (s)', yaxis_title='Hz', height=400)
+    st.plotly_chart(fig_stft, use_container_width=True)
 
 
 def show_genre(prediction, model):
@@ -898,7 +929,7 @@ def show_recommendations(predictions, model):
         return
 
     # Randomly choose 5 numbers from 1 to 500
-    random_numbers = np.random.choice(500, 5, replace=False)
+    random_numbers = random.sample(range(1, 501), 5)
     for i in range(5):
         # Randomly choose a genre for each iteration
         chosen_genre = random.choice(predicted_genres)
@@ -1222,10 +1253,11 @@ def plot_birch(umap, new_umap):
     # Display the plot in Streamlit
     st.pyplot(fig)
 
-def ground_truth_table(model):
-     if model != "DBSCAN":
-        st.subheader("Ground Truth Table")
-        st.image('clustering_ground_truth/' + model + '.png')
+# def ground_truth_table(model):
+#      if model != "DBSCAN":
+#         st.subheader("Ground Truth Table")
+#         st.image('clustering_ground_truth/' + model + '.png')
+
     
 
 def plot_dbscan(pca, new_pca):
@@ -1281,92 +1313,243 @@ def plot_dbscan(pca, new_pca):
     # Display the plot in Streamlit
     st.pyplot(fig)
 
+# Cache data loading
+@st.cache_data
+def load_data():
+    return pd.read_csv("dataset_30s.csv")
+
+# Cache model loading
+@st.cache_resource
+def load_models():
+    return {
+        'scaler': joblib.load("models/scaler.pkl"),
+        'pca': joblib.load("models/pca_model.pkl")
+    }
+
+
+
 def main():
-    st.title("Music Genre Clustering")
-    proceed = False
-    with st.sidebar:
-        music_file = st.file_uploader("Upload Audio File", type="mp3")
-        if music_file:
-            with st.spinner("Loading audio and extracting features..."):
+    page = st.sidebar.selectbox("Select Page", ["Prediction", "Dashboard"])
+    
+    if page == "Prediction":
+        st.title("Music Genre Clustering")
+        proceed = False
+        with st.sidebar:
+            music_file = st.file_uploader("Upload Audio File", type="mp3")
+            if music_file:
                 y, sr, audio_features = load_and_extract_audio_features(music_file)
-            models = st.selectbox("Select Model", ["KMeans", "Agglomerative", "GMM", "Mean Shift", "Birch", "DBSCAN"])
-            if models == "KMeans":
-                predict_button = st.button("Predict Genre")
-                if predict_button:
-                    predictions, labels, umap, new_umap= make_predictions(audio_features, "KMeans")
-                    proceed = True
-            elif models == "Agglomerative":
-                predict_button = st.button("Predict Genre")
-                if predict_button:
-                    predictions , labels, umap, new_umap= make_predictions(audio_features, "Agglomerative")
-                    proceed = True
-            elif models == "GMM":
-                predict_button = st.button("Predict Genre")
-                if predict_button:
-                    predictions, labels, umap, new_umap = make_predictions(audio_features, "GMM")
-                    proceed = True
-            elif models == "Mean Shift":
-                predict_button = st.button("Predict Genre")
-                if predict_button:
-                    predictions, labels, tsne, new_tsne = make_predictions(audio_features, "Mean Shift")
-                    proceed = True
-            elif models == "Birch":
-                predict_button = st.button("Predict Genre")
-                if predict_button:
-                    predictions, labels, umap, new_umap = make_predictions(audio_features, "Birch")
-                    proceed = True
-            elif models == "DBSCAN":
-                predict_button = st.button("Predict Genre")
-                if predict_button:
-                    predictions, labels, pca, new_pca = make_predictions(audio_features, "DBSCAN")
-                    proceed = True
+                models = st.selectbox("Select Model", ["KMeans", "Agglomerative", "GMM", "Mean Shift", "Birch", "DBSCAN"])
+                if models == "KMeans":
+                    predict_button = st.button("Predict Genre")
+                    if predict_button:
+                        predictions, labels, umap, new_umap= make_predictions(audio_features, "KMeans")
+                        proceed = True
+                elif models == "Agglomerative":
+                    predict_button = st.button("Predict Genre")
+                    if predict_button:
+                        predictions , labels, umap, new_umap= make_predictions(audio_features, "Agglomerative")
+                        proceed = True
+                elif models == "GMM":
+                    predict_button = st.button("Predict Genre")
+                    if predict_button:
+                        predictions, labels, umap, new_umap = make_predictions(audio_features, "GMM")
+                        proceed = True
+                elif models == "Mean Shift":
+                    predict_button = st.button("Predict Genre")
+                    if predict_button:
+                        predictions, labels, tsne, new_tsne = make_predictions(audio_features, "Mean Shift")
+                        proceed = True
+                elif models == "Birch":
+                    predict_button = st.button("Predict Genre")
+                    if predict_button:
+                        predictions, labels, umap, new_umap = make_predictions(audio_features, "Birch")
+                        proceed = True
+                elif models == "DBSCAN":
+                    predict_button = st.button("Predict Genre")
+                    if predict_button:
+                        predictions, labels, pca, new_pca = make_predictions(audio_features, "DBSCAN")
+                        proceed = True
+                else:
+                    st.info("Please select a model to predict the music genre.")
+                    predictions = None
+                
             else:
-                st.info("Please select a model to predict the music genre.")
-                predictions = None
-            
-        else:
-            st.info("Please upload an audio file to get started.")
-            y, sr, audio_features = None, None, None  
+                st.info("Please upload an audio file to get started.")
+                y, sr, audio_features = None, None, None  
 
-    if proceed:
-        # Create time array for the waveform
-        time_array = np.linspace(0, len(y) / sr, num=len(y))
-            
-        # Create a Plotly figure for the waveform
-        fig_waveform = go.Figure()
-            
-        # Add waveform trace
-        fig_waveform.add_trace(go.Scatter(x=time_array, y=y, mode='lines', name='Waveform'))
-            
-        # Update layout for the waveform
-        fig_waveform.update_layout(title='Waveform',
-                                            xaxis_title='Time (s)',
-                                            yaxis_title='Amplitude',
-                                            height=400)
+        if proceed:
+            # Create time array for the waveform
+            time_array = np.linspace(0, len(y) / sr, num=len(y))
+                
+            # Create a Plotly figure for the waveform
+            fig_waveform = go.Figure()
+                
+            # Add waveform trace
+            fig_waveform.add_trace(go.Scatter(x=time_array, y=y, mode='lines', name='Waveform'))
+                
+            # Update layout for the waveform
+            fig_waveform.update_layout(title='Waveform',
+                                                xaxis_title='Time (s)',
+                                                yaxis_title='Amplitude',
+                                                height=400)
 
-        # Display the waveform plot in Streamlit
-        st.plotly_chart(fig_waveform, use_container_width=True)
+            # Display the waveform plot in Streamlit
+            st.plotly_chart(fig_waveform, use_container_width=True)
+            plot_spectral_centroid(y, sr)
+            plot_spectral_rolloff(y, sr)
+            plot_stft(y, sr)
 
-        audio = st.audio(music_file, start_time=0)
+
+            audio = st.audio(music_file, start_time=0)
+            
+            if models == "KMeans":
+                plot_kmeans(umap, new_umap)
+            elif models == "Agglomerative":
+                plot_agglomerative(umap, new_umap)
+            elif models == "GMM":
+                plot_gmm(umap, new_umap)
+            elif models == "Mean Shift":
+                plot_mean_shift(tsne, new_tsne)
+            elif models == "Birch":
+                plot_birch(umap, new_umap)
+            elif models == "DBSCAN":
+                plot_dbscan(pca, new_pca)
+
+            
+            # ground_truth_table(models)
+            show_genre(predictions, models)
+            show_recommendations(predictions, models)
+
+    elif page == "Dashboard":
+        # Load data and models
+        df = load_data()
+        models = load_models()
+        st.title("Music Genre Clustering Dashboard")
         
-        if models == "KMeans":
-            plot_kmeans(umap, new_umap)
-        elif models == "Agglomerative":
-            plot_agglomerative(umap, new_umap)
-        elif models == "GMM":
-            plot_gmm(umap, new_umap)
-        elif models == "Mean Shift":
-            plot_mean_shift(tsne, new_tsne)
-        elif models == "Birch":
-            plot_birch(umap, new_umap)
-        elif models == "DBSCAN":
-            plot_dbscan(pca, new_pca)
-
+        st.write("Data Preview:", df.head())
         
-        ground_truth_table(models)
-        show_genre(predictions, models)
-        show_recommendations(predictions, models)
+        # Preprocess the data
+        scaled_features = models['scaler'].transform(df)
+        
+        # Cache dimensionality reduction
+        @st.cache_data
+        def perform_dim_reduction(scaled_features):
+            import umap
+            umap_model_2d = umap.UMAP(n_components=2, n_neighbors=5, min_dist=0.0, random_state=42)
+            umap_model_3d = umap.UMAP(n_components=3, n_neighbors=5, min_dist=0.0, random_state=42)
+            tsne_model_2d = TSNE(n_components=2, perplexity=50, learning_rate=1000, n_iter=1000)
+            tsne_model_3d = TSNE(n_components=3, perplexity=50, learning_rate=1000, n_iter=1000)
+            pca_model_2d = models['pca']
+            pca_model_3d = PCA(n_components=3)
+            pca_model_3d.fit(scaled_features)
+            return {
+                'UMAP_2D': umap_model_2d.fit_transform(scaled_features),
+                'UMAP_3D': umap_model_3d.fit_transform(scaled_features),
+                't-SNE_2D': tsne_model_2d.fit_transform(scaled_features),
+                't-SNE_3D': tsne_model_3d.fit_transform(scaled_features),
+                'PCA_2D': pca_model_2d.transform(scaled_features),
+                'PCA_3D': pca_model_3d.transform(scaled_features)
+            }
+        
+        dim_reduction_results = perform_dim_reduction(scaled_features)
+        # Your existing code for data exploration, visualization, model performance, etc.
 
+        if st.checkbox("Show Dimension Reduction Before Clustering"):
+            st.markdown("## Dimension Reduction Before Clustering")
+            
+            dim_reduction_technique = st.selectbox("Select Dimensionality Reduction Technique (Pre-Clustering):", 
+                                                   ['PCA', 'UMAP', 't-SNE'], key="pre_clustering_technique")
+            dim_reduction_dimension = st.selectbox("Select Dimension (Pre-Clustering):", ['2D', '3D'], key="pre_clustering_dimension")
+            
+            result_key = f"{dim_reduction_technique}_{dim_reduction_dimension}"
+            result = dim_reduction_results[result_key]
+            
+            trustworthiness_score = trustworthiness(scaled_features, result, n_neighbors=5)
+            
+            # Display trustworthiness
+            st.markdown("### Trustworthiness")
+            st.metric("Trustworthiness", f"{trustworthiness_score:.2f}", help="Higher is better")
+            
+            # Plot the dimension reduction result
+            if dim_reduction_dimension == '2D':
+                fig = px.scatter(x=result[:, 0], y=result[:, 1], 
+                                 title=f"Dimension Reduction ({dim_reduction_technique} - {dim_reduction_dimension})",
+                                 labels={'color': 'Cluster'},
+                                 color_continuous_scale='Rainbow')
+            else:
+                fig = px.scatter_3d(x=result[:, 0], y=result[:, 1], z=result[:, 2],
+                                    title=f"Dimension Reduction ({dim_reduction_technique} - {dim_reduction_dimension})",
+                                    labels={'color': 'Cluster'},
+                                    color_continuous_scale='Rainbow')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Optimize the comparative analysis section
+        if st.checkbox("Model Performance and Clustering"):
+            st.markdown("## Model Performance and Clustering")
+            
+            model_type = st.selectbox("Select model for clustering:", 
+                                      ['KMeans', 'Agglomerative', 'GMM', 'Mean Shift', 'Birch', 'DBSCAN'])
+
+            # Input parameters based on model type
+            if model_type == 'KMeans':
+                n_clusters = st.slider("Number of Clusters", min_value=2, max_value=20, value=8)
+                model = KMeans(n_clusters=n_clusters)
+            elif model_type == 'Agglomerative':
+                n_clusters = st.slider("Number of Clusters", min_value=2, max_value=20, value=8)
+                model = AgglomerativeClustering(n_clusters=n_clusters)
+            elif model_type == 'GMM':
+                n_components = st.slider("Number of Components", min_value=2, max_value=20, value=8)
+                model = GaussianMixture(n_components=n_components)
+            elif model_type == 'Mean Shift':
+                bandwidth = st.slider("Bandwidth", min_value=0.1, max_value=10.0, value=2.0)
+                model = MeanShift(bandwidth=bandwidth)
+            elif model_type == 'Birch':
+                n_clusters = st.slider("Number of Clusters", min_value=2, max_value=20, value=8)
+                model = Birch(n_clusters=n_clusters)
+            elif model_type == 'DBSCAN':
+                eps = st.slider("Epsilon", min_value=0.1, max_value=10.0, value=0.5)
+                min_samples = st.slider("Minimum Samples", min_value=1, max_value=20, value=5)
+                model = DBSCAN(eps=eps, min_samples=min_samples)
+            
+            dim_reduction_technique = st.selectbox("Select Dimensionality Reduction Technique:", 
+                                                   ['PCA', 'UMAP', 't-SNE'])
+            dim_reduction_dimension = st.selectbox("Select Dimension:", ['2D', '3D'])
+            
+            result_key = f"{dim_reduction_technique}_{dim_reduction_dimension}"
+            result = dim_reduction_results[result_key]
+            
+            predicted_labels = model.fit_predict(result)
+            
+            # Calculate clustering metrics
+            silhouette_avg = silhouette_score(result, predicted_labels)
+            davies_bouldin = davies_bouldin_score(result, predicted_labels)
+            calinski_harabasz = calinski_harabasz_score(result, predicted_labels)
+            trustworthiness_score = trustworthiness(scaled_features, result, n_neighbors=5)
+            
+            # Display metrics
+            st.markdown("### Performance Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Silhouette Score", f"{silhouette_avg:.2f}", help="Higher is better")
+            col2.metric("Davies-Bouldin Index", f"{davies_bouldin:.2f}", help="Lower is better")
+            col3.metric("Calinski-Harabasz Index", f"{calinski_harabasz:.2f}", help="Higher is better")
+            col4.metric("Trustworthiness", f"{trustworthiness_score:.2f}", help="Higher is better")
+            
+            # Plot the clustering result
+            if dim_reduction_dimension == '2D':
+                fig = px.scatter(x=result[:, 0], y=result[:, 1], 
+                                 color=predicted_labels, 
+                                 title=f"{model_type} Clustering ({dim_reduction_technique} - {dim_reduction_dimension})",
+                                 labels={'color': 'Cluster'},
+                                 color_continuous_scale='Rainbow')
+            else:
+                fig = px.scatter_3d(x=result[:, 0], y=result[:, 1], z=result[:, 2],
+                                    color=predicted_labels, 
+                                    title=f"{model_type} Clustering ({dim_reduction_technique} - {dim_reduction_dimension})",
+                                    labels={'color': 'Cluster'},
+                                    color_continuous_scale='Rainbow')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        
 
 if __name__ == "__main__":
     main()
